@@ -1,6 +1,6 @@
 # Python standard modules
+import asyncio
 import os
-import requests
 import base64
 import re
 from json import load
@@ -8,6 +8,7 @@ from threading import Thread
 from typing import Dict, List, Optional
 
 # Downloaded modules
+import aiohttp
 from playsound import playsound
 
 # Local files
@@ -31,8 +32,8 @@ def tts(
     # Iterate over endpoints to find a working one
     for endpoint in endpoint_data:
         # Generate audio bytes from the current endpoint
-        audio_bytes: bytes = _fetch_audio_bytes(endpoint, text, voice)
-        
+        audio_bytes: bytes = asyncio.run(_fetch_audio_bytes_async(endpoint, text, voice))
+
         if audio_bytes:
             # Save the generated audio to a file
             _save_audio_file(output_file_path, audio_bytes)
@@ -56,38 +57,40 @@ def _save_audio_file(output_file_path: str, audio_bytes: bytes):
     with open(output_file_path, "wb") as file:
         file.write(audio_bytes)
 
-def _fetch_audio_bytes(
+async def _fetch_audio_bytes_async(
     endpoint: Dict[str, str],
     text: str,
     voice: Voice
 ) -> Optional[bytes]:
-    """Fetch audio data from an endpoint and decode it."""
-    
-    # Initialize variables for endpoint validity and audio data
     text_chunks: List[str] = _split_text(text)
-    audio_chunks: List[str] = ["" for _ in range(len(text_chunks))]
+    audio_chunks: List[str] = [""] * len(text_chunks)
 
-    # Function to generate audio for each text chunk
-    def generate_audio_chunk(index: int, text_chunk: str):
+    async def fetch_chunk(
+        session: aiohttp.ClientSession,
+        index: int,
+        text_chunk: str
+    ):
         try:
-            response = requests.post(endpoint["url"], json={"text": text_chunk, "voice": voice.value})
-            response.raise_for_status()
-            audio_chunks[index] = response.json()[endpoint["response"]]
-        except (requests.RequestException, KeyError):
-            return
+            async with session.post(
+                endpoint["url"],
+                json={"text": text_chunk, "voice": voice.value},
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                audio_chunks[index] = data[endpoint["response"]]
+        except (aiohttp.ClientError, KeyError):
+            pass
 
-    # Start threads for generating audio for each chunk
-    threads = [Thread(target=generate_audio_chunk, args=(i, chunk)) for i, chunk in enumerate(text_chunks)]
-    for thread in threads:
-        thread.start()
-
-    for thread in threads:
-        thread.join()
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            fetch_chunk(session, i, chunk)
+            for i, chunk in enumerate(text_chunks)
+        ]
+        await asyncio.gather(*tasks)
 
     if any(not chunk for chunk in audio_chunks):
         return None
 
-    # Concatenate and decode audio data from all chunks
     return base64.b64decode("".join(audio_chunks))
 
 def _load_endpoints() -> List[Dict[str, str]]:
