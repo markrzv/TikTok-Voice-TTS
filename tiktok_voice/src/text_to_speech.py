@@ -4,7 +4,6 @@ import os
 import base64
 import re
 from json import load
-from threading import Thread
 from typing import Dict, List, Optional
 
 # Downloaded modules
@@ -47,7 +46,7 @@ def tts(
             break
 
     if not success:
-        raise Exception("failed to generate audio")
+        raise Exception("failed to generate audio, all endpoints failed")
 
 def _save_audio_file(output_file_path: str, audio_bytes: bytes):
     """Write the audio bytes to a file."""
@@ -70,26 +69,21 @@ async def _fetch_audio_bytes_async(
         index: int,
         text_chunk: str
     ):
-        try:
-            async with session.post(
-                endpoint["url"],
-                json={"text": text_chunk, "voice": voice.value},
-            ) as response:
-                response.raise_for_status()
-                data = await response.json()
-                audio_chunks[index] = data[endpoint["response"]]
-        except (aiohttp.ClientError, KeyError):
-            pass
+        async with session.post(
+            endpoint["url"],
+            json={"text": text_chunk, "voice": voice.value},
+        ) as response:
+            response.raise_for_status()
+            data = await response.json()
+            audio_chunks[index] = data[endpoint["response"]]
 
     async with aiohttp.ClientSession() as session:
-        tasks = [
-            fetch_chunk(session, i, chunk)
-            for i, chunk in enumerate(text_chunks)
-        ]
-        await asyncio.gather(*tasks)
-
-    if any(not chunk for chunk in audio_chunks):
-        return None
+        tasks = [fetch_chunk(session, i, chunk) for i, chunk in enumerate(text_chunks)]
+        
+        try:
+            await asyncio.gather(*tasks)
+        except:
+            return None
 
     return base64.b64decode("".join(audio_chunks))
 
